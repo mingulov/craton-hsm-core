@@ -84,7 +84,7 @@ fn fuzz_read_random_attributes(data: &[u8]) {
         offset += 8;
 
         // Should never panic
-        let _ = read_attribute(&obj, attr_type);
+        let _ = read_attribute(&obj, attr_type, true);
     }
 }
 

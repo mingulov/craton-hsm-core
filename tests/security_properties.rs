@@ -370,7 +370,7 @@ fn test_sensitive_non_extractable_key_not_readable() {
     obj.extractable = false;
     obj.key_material = Some(RawKeyMaterial::new(vec![0x42; 32]));
 
-    let result = read_attribute(&obj, CKA_VALUE);
+    let result = read_attribute(&obj, CKA_VALUE, true);
     assert!(
         result.is_err(),
         "CKA_VALUE must not be readable when sensitive=true, extractable=false"
@@ -384,7 +384,7 @@ fn test_non_sensitive_extractable_key_readable() {
     obj.extractable = true;
     obj.key_material = Some(RawKeyMaterial::new(vec![0x42; 32]));
 
-    let result = read_attribute(&obj, CKA_VALUE);
+    let result = read_attribute(&obj, CKA_VALUE, true);
     assert!(
         result.is_ok(),
         "CKA_VALUE should be readable when sensitive=false, extractable=true"

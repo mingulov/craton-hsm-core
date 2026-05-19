@@ -26,7 +26,7 @@ fn test_sensitive_non_extractable_blocks_value_read() {
     obj.extractable = false;
     obj.key_material = Some(RawKeyMaterial::new(vec![0xAA; 32]));
 
-    let result = read_attribute(&obj, CKA_VALUE);
+    let result = read_attribute(&obj, CKA_VALUE, true);
     assert!(matches!(result, Err(HsmError::AttributeSensitive)));
 }
 
@@ -37,7 +37,7 @@ fn test_sensitive_extractable_allows_value_read() {
     obj.extractable = true;
     obj.key_material = Some(RawKeyMaterial::new(vec![0xBB; 32]));
 
-    let result = read_attribute(&obj, CKA_VALUE).unwrap();
+    let result = read_attribute(&obj, CKA_VALUE, true).unwrap();
     assert_eq!(result, Some(vec![0xBB; 32]));
 }
 
@@ -48,7 +48,7 @@ fn test_non_sensitive_allows_value_read() {
     obj.extractable = true;
     obj.key_material = Some(RawKeyMaterial::new(vec![0xCC; 32]));
 
-    let result = read_attribute(&obj, CKA_VALUE).unwrap();
+    let result = read_attribute(&obj, CKA_VALUE, true).unwrap();
     assert_eq!(result, Some(vec![0xCC; 32]));
 }
 
@@ -60,7 +60,7 @@ fn test_non_sensitive_non_extractable_allows_value_read() {
     obj.extractable = false;
     obj.key_material = Some(RawKeyMaterial::new(vec![0xDD; 32]));
 
-    let result = read_attribute(&obj, CKA_VALUE).unwrap();
+    let result = read_attribute(&obj, CKA_VALUE, true).unwrap();
     assert_eq!(result, Some(vec![0xDD; 32]));
 }
 
@@ -303,10 +303,10 @@ fn test_read_boolean_attributes() {
     obj.can_sign = true;
     obj.modifiable = false;
 
-    assert_eq!(read_attribute(&obj, CKA_ENCRYPT).unwrap(), Some(vec![1]));
-    assert_eq!(read_attribute(&obj, CKA_DECRYPT).unwrap(), Some(vec![0]));
-    assert_eq!(read_attribute(&obj, CKA_SIGN).unwrap(), Some(vec![1]));
-    assert_eq!(read_attribute(&obj, CKA_MODIFIABLE).unwrap(), Some(vec![0]));
+    assert_eq!(read_attribute(&obj, CKA_ENCRYPT, true).unwrap(), Some(vec![1]));
+    assert_eq!(read_attribute(&obj, CKA_DECRYPT, true).unwrap(), Some(vec![0]));
+    assert_eq!(read_attribute(&obj, CKA_SIGN, true).unwrap(), Some(vec![1]));
+    assert_eq!(read_attribute(&obj, CKA_MODIFIABLE, true).unwrap(), Some(vec![0]));
 }
 
 #[test]
@@ -314,13 +314,13 @@ fn test_read_class_and_key_type() {
     let mut obj = StoredObject::new(1, CKO_SECRET_KEY);
     obj.key_type = Some(CKK_AES);
 
-    let class_bytes = read_attribute(&obj, CKA_CLASS).unwrap().unwrap();
+    let class_bytes = read_attribute(&obj, CKA_CLASS, true).unwrap().unwrap();
     assert_eq!(
         CK_ULONG::from_ne_bytes(class_bytes.try_into().unwrap()),
         CKO_SECRET_KEY
     );
 
-    let kt_bytes = read_attribute(&obj, CKA_KEY_TYPE).unwrap().unwrap();
+    let kt_bytes = read_attribute(&obj, CKA_KEY_TYPE, true).unwrap().unwrap();
     assert_eq!(
         CK_ULONG::from_ne_bytes(kt_bytes.try_into().unwrap()),
         CKK_AES

@@ -1053,8 +1053,11 @@ impl HsmService for HsmServiceImpl {
 
         // (#8) Check if object is private; if so, require login.
         // Per PKCS#11, private object attributes are only visible to logged-in sessions.
+        // Use `is_logged_in=true` when calling read_attribute for the visibility
+        // probe itself so the read of CKA_PRIVATE succeeds regardless of state;
+        // login enforcement happens immediately after via `require_logged_in`.
         let is_private =
-            craton_hsm::store::attributes::read_attribute(&obj, CKA_PRIVATE as CK_ULONG)
+            craton_hsm::store::attributes::read_attribute(&obj, CKA_PRIVATE as CK_ULONG, true)
                 .ok()
                 .flatten()
                 .map(|v| !v.is_empty() && v[0] != 0)
@@ -1064,11 +1067,16 @@ impl HsmService for HsmServiceImpl {
             require_logged_in(&self.hsm, slot_id)?;
         }
 
+        // After the visibility gate above, the caller is logged in iff the
+        // object is not private OR `require_logged_in` succeeded. Either way,
+        // it is safe to pass `true` to `read_attribute` here: the spec-mandated
+        // private-object visibility check has already been enforced.
+        let is_logged_in = true;
         let mut attrs = Vec::new();
 
         for attr_type in &req.attribute_types {
             let attr_ck = to_ck_ulong(*attr_type, "attribute_type")?;
-            match craton_hsm::store::attributes::read_attribute(&obj, attr_ck) {
+            match craton_hsm::store::attributes::read_attribute(&obj, attr_ck, is_logged_in) {
                 Ok(Some(value)) => {
                     attrs.push(Attribute {
                         attr_type: *attr_type,

@@ -589,11 +589,37 @@ pub fn apply_attribute(
 }
 
 /// Read attribute value from a stored object.
-/// Returns None if the attribute is sensitive and non-extractable.
+///
+/// `is_logged_in` is the login state of the calling session. PKCS#11 mandates
+/// that objects with `CKA_PRIVATE=true` are invisible at the object level to
+/// non-logged-in sessions: any attempt to access such an object — including
+/// reading its attributes through a known handle — must behave as if the
+/// object does not exist. This layered check guards the `C_GetAttributeValue`
+/// path, which calls `read_attribute` directly on a caller-supplied handle
+/// and would otherwise bypass the find-objects visibility filter.
+///
+/// Returns:
+/// - `Err(HsmError::ObjectHandleInvalid)` if the object is private and the
+///   caller is not logged in (the spec-mandated response — the object should
+///   appear not to exist).
+/// - `Err(HsmError::AttributeSensitive)` if reading `CKA_VALUE` on a
+///   sensitive, non-extractable object.
+/// - `Ok(None)` if the attribute is unknown / not present on the object.
 pub fn read_attribute(
     obj: &StoredObject,
     attr_type: CK_ATTRIBUTE_TYPE,
+    is_logged_in: bool,
 ) -> Result<Option<Vec<u8>>, HsmError> {
+    // PKCS#11 §4.4 / §5.7: a private object must be inaccessible to
+    // non-logged-in sessions at the OBJECT level — not just at the
+    // find-objects level. Without this guard, a caller holding a handle
+    // (e.g. one obtained while logged in and reused after logout) could read
+    // CKA_VALUE of a private, non-sensitive, extractable object via
+    // C_GetAttributeValue. Return CKR_OBJECT_HANDLE_INVALID so the object
+    // appears not to exist, as the spec requires.
+    if obj.private && !is_logged_in {
+        return Err(HsmError::ObjectHandleInvalid);
+    }
     match attr_type {
         CKA_CLASS => Ok(Some(ck_ulong_to_bytes(obj.class))),
         CKA_KEY_TYPE => Ok(obj.key_type.map(ck_ulong_to_bytes)),
