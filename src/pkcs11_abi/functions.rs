@@ -2678,9 +2678,16 @@ pub extern "C" fn C_GenerateKey(
             Ok(s) => s,
             Err(e) => return err_to_rv(e),
         };
-        if !sess.read().is_rw() {
+        let sess_read = sess.read();
+        if !sess_read.is_rw() {
             return CKR_SESSION_READ_ONLY;
         }
+        // PKCS#11 §5.7: Generating a secret key creates a private/secret
+        // object and requires authentication. Mirror C_CreateObject.
+        if !sess_read.state.is_logged_in() {
+            return CKR_USER_NOT_LOGGED_IN;
+        }
+        drop(sess_read);
 
         let mechanism = unsafe { (*p_mechanism).mechanism };
         if mechanism != CKM_AES_KEY_GEN {
@@ -2864,9 +2871,16 @@ pub extern "C" fn C_GenerateKeyPair(
             Ok(s) => s,
             Err(e) => return err_to_rv(e),
         };
-        if !sess.read().is_rw() {
+        let sess_read = sess.read();
+        if !sess_read.is_rw() {
             return CKR_SESSION_READ_ONLY;
         }
+        // PKCS#11 §5.7: Generating a keypair creates a private-key object
+        // and requires authentication. Mirror C_CreateObject.
+        if !sess_read.state.is_logged_in() {
+            return CKR_USER_NOT_LOGGED_IN;
+        }
+        drop(sess_read);
 
         let mechanism = unsafe { (*p_mechanism).mechanism };
         if !mechanisms::is_keypair_gen_mechanism(mechanism) {
