@@ -328,18 +328,43 @@ fn require_authenticated_session(hsm: &HsmCore, session_handle: u64) -> Result<C
 /// and destroy_object. Objects created on one slot are not visible or
 /// accessible from sessions on another slot.
 ///
-/// (#4) Attributes that callers must NOT set directly via GenerateKey.
-/// These security-critical attributes must be derived from the mechanism
-/// or enforced by policy, not supplied by the caller.
-/// Retained for use when mechanism dispatch is implemented (#20).
-#[allow(dead_code)]
+/// (#4) Attributes that callers must NOT set directly via key-creating RPCs.
+/// These security-critical attributes are either:
+///   - derived from the mechanism / key type by the daemon (CKA_ALWAYS_SENSITIVE,
+///     CKA_NEVER_EXTRACTABLE, CKA_LOCAL),
+///   - controlled by daemon policy to keep generated/wrapped/derived material
+///     non-exportable (CKA_SENSITIVE, CKA_EXTRACTABLE), or
+///   - assertions about provenance the daemon itself must make (CKA_TRUSTED).
+///
+/// Enforced by `reject_forbidden_attrs` at the entry of every RPC that
+/// processes a caller-supplied template. Without that gate, generate_key /
+/// generate_key_pair / unwrap_key / derive_key / copy_object set
+/// `obj.extractable = false` then unconditionally called `apply_attribute` over
+/// the client template, silently overwriting the daemon's hardening.
 const FORBIDDEN_TEMPLATE_ATTRS: &[u64] = &[
     CKA_SENSITIVE as u64,
     CKA_EXTRACTABLE as u64,
     CKA_ALWAYS_SENSITIVE as u64,
     CKA_NEVER_EXTRACTABLE as u64,
     CKA_TRUSTED as u64,
+    CKA_LOCAL as u64,
 ];
+
+/// Reject any caller-supplied template attribute that the daemon must control
+/// itself. Returns `Status::invalid_argument` with the offending attribute's
+/// hex value; safe to call before the RPC has touched object state.
+fn reject_forbidden_attrs(template: &[(CK_ULONG, Vec<u8>)]) -> Result<(), Status> {
+    for (attr_type, _) in template {
+        if FORBIDDEN_TEMPLATE_ATTRS.contains(&(*attr_type as u64)) {
+            return Err(Status::invalid_argument(format!(
+                "Template attribute 0x{:08x} is set by the daemon and \
+                 must not appear in caller-supplied templates",
+                *attr_type as u64
+            )));
+        }
+    }
+    Ok(())
+}
 
 #[tonic::async_trait]
 impl HsmService for HsmServiceImpl {
@@ -675,6 +700,7 @@ impl HsmService for HsmServiceImpl {
 
         // Parse template for CKA_VALUE_LEN (key size in bytes)
         let template = proto_attrs_to_template(&req.template)?;
+        reject_forbidden_attrs(&template)?;
         let key_len = template
             .iter()
             .find(|(t, _)| *t == CKA_VALUE_LEN)
@@ -767,6 +793,8 @@ impl HsmService for HsmServiceImpl {
         let fips_approved = craton_hsm::crypto::mechanisms::is_fips_approved(mech_type);
         let pub_template = proto_attrs_to_template(&req.public_template)?;
         let priv_template = proto_attrs_to_template(&req.private_template)?;
+        reject_forbidden_attrs(&pub_template)?;
+        reject_forbidden_attrs(&priv_template)?;
 
         // Allocate handles upfront
         let pub_handle = self
@@ -1800,6 +1828,7 @@ impl HsmService for HsmServiceImpl {
 
         // Build a new secret key object from the unwrapped material
         let template = proto_attrs_to_template(&req.template)?;
+        reject_forbidden_attrs(&template)?;
         let handle = self
             .hsm
             .object_store()
@@ -1919,6 +1948,7 @@ impl HsmService for HsmServiceImpl {
 
         // Parse CKA_VALUE_LEN from template for desired derived key length
         let template = proto_attrs_to_template(&req.template)?;
+        reject_forbidden_attrs(&template)?;
         let derived_len = template
             .iter()
             .find(|(t, _)| *t == CKA_VALUE_LEN)
@@ -2066,6 +2096,7 @@ impl HsmService for HsmServiceImpl {
 
         // Apply template overrides
         let template = proto_attrs_to_template(&req.template)?;
+        reject_forbidden_attrs(&template)?;
         for (attr_type, value) in &template {
             craton_hsm::store::attributes::apply_attribute(&mut new_obj, *attr_type, value)
                 .map_err(hsm_err_to_status)?;
