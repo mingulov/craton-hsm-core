@@ -69,6 +69,7 @@ fs2 = "0.4"
 # Concurrency
 parking_lot = "0.12"
 dashmap = "6"
+indexmap = "2"
 
 # Config and logging
 toml = "1"
