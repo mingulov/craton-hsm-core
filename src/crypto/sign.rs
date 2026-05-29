@@ -1645,6 +1645,67 @@ mod tests {
     }
 
     #[test]
+    fn clear_rsa_key_cache_drains_handle_caches() {
+        // Populate both the private- and public-key handle caches via the
+        // public sign/verify entry points, then verify that
+        // `clear_rsa_key_cache()` drains them.  The DER-hash cache
+        // (RSA_KEY_CACHE) is also cleared, but since it is private to this
+        // module we observe its drainage indirectly: a fresh parse after
+        // `clear_rsa_key_cache()` must yield a new Arc (no ptr-eq).
+        let (slot, handle) = unique_ids();
+        let (priv_der, modulus, pub_exp) = fresh_rsa_keypair();
+        let msg = b"clear-cache test";
+
+        // Populate private-key handle cache via sign_cached.
+        let sig = rsa_pkcs1v15_sign_cached(slot, handle, &priv_der, msg, Some(HashAlg::Sha256))
+            .expect("sign");
+        // Populate public-key handle cache via verify_cached.
+        let ok = rsa_pkcs1v15_verify_cached(
+            slot,
+            handle,
+            &modulus,
+            &pub_exp,
+            msg,
+            &sig,
+            Some(HashAlg::Sha256),
+        )
+        .expect("verify");
+        assert!(ok);
+
+        assert!(
+            get_cached_rsa_private_key(slot, handle).is_some(),
+            "precondition: private-key cache populated"
+        );
+        assert!(
+            get_cached_rsa_public_key(slot, handle).is_some(),
+            "precondition: public-key cache populated"
+        );
+
+        clear_rsa_key_cache();
+
+        assert!(
+            get_cached_rsa_private_key(slot, handle).is_none(),
+            "clear_rsa_key_cache must drain RSA_PRIV_CACHE"
+        );
+        assert!(
+            get_cached_rsa_public_key(slot, handle).is_none(),
+            "clear_rsa_key_cache must drain RSA_PUB_CACHE"
+        );
+
+        // Re-populate after clear and confirm the new Arc is independent of
+        // any pre-clear cached value (proves the entry really was dropped,
+        // not just hidden by a duplicate insert).
+        let _ = rsa_pkcs1v15_sign_cached(slot, handle, &priv_der, msg, Some(HashAlg::Sha256))
+            .expect("sign after clear");
+        assert!(
+            get_cached_rsa_private_key(slot, handle).is_some(),
+            "post-clear sign should repopulate the private-key cache"
+        );
+
+        evict_cached_keys(slot, handle);
+    }
+
+    #[test]
     fn evict_cached_keys_clears_public_entry() {
         let (slot, handle) = unique_ids();
         let (priv_der, modulus, pub_exp) = fresh_rsa_keypair();

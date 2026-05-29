@@ -342,6 +342,11 @@ pub extern "C" fn C_Finalize(p_reserved: CK_VOID_PTR) -> CK_RV {
             .record(0, AuditOperation::Finalize, AuditResult::Success, None);
         hsm.audit_log.flush();
 
+        // Flush parsed RSA key caches so they do not survive across an
+        // initialize/finalize cycle (matching the GCM-counter reset semantics
+        // and the C_InitToken wipe).
+        crate::crypto::sign::clear_rsa_key_cache();
+
         // Reset state so a subsequent C_Initialize can succeed (PKCS#11 spec compliant)
         *guard = None;
         INIT_PID.store(0, Ordering::Release);
@@ -565,6 +570,10 @@ pub extern "C" fn C_InitToken(
         hsm.object_store.clear();
         // All keys are destroyed — safe to reset all GCM/IV counters
         crate::crypto::encrypt::force_reset_all_counters();
+        // Flush parsed RSA key caches so a re-imported key with identical DER
+        // bytes does not resurrect the previously parsed (DER-hash- or
+        // handle-keyed) form after the wipe.
+        crate::crypto::sign::clear_rsa_key_cache();
 
         match token.init_token(pin, &label) {
             Ok(()) => CKR_OK,
