@@ -14,6 +14,8 @@ use std::ptr;
 use std::sync::Barrier;
 use std::thread;
 
+mod common;
+
 fn ensure_init() {
     let rv = C_Initialize(ptr::null_mut());
     assert!(rv == CKR_OK || rv == CKR_CRYPTOKI_ALREADY_INITIALIZED);

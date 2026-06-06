@@ -47,8 +47,8 @@ aes-kw = "0.2"
 
 # Post-quantum cryptography (Phase 3)
 ml-kem = { version = "0.3.0-rc.0", features = ["getrandom"] }
-ml-dsa = "0.1.0-rc.7"
-slh-dsa = "0.2.0-rc.4"
+ml-dsa = { version = "0.1.1", features = ["rand_core"] }
+slh-dsa = "0.2.0-rc.5"
 
 # RNG for PQC crate compatibility (rand_core 0.10 ecosystem).
 # The PQC crates (ml-kem, ml-dsa, slh-dsa) depend on rand_core 0.10 / getrandom 0.4,
@@ -105,6 +105,7 @@ windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_Syst
 [dev-dependencies]
 tempfile = "3"
 hex = "0.4"
+ctor = "0.4"
 criterion = { version = "0.8", features = ["html_reports"] }
 libloading = "0.9"
 # craton_hsm-awslc: only available with the enterprise repo; see docs/fips-mode-guide.md

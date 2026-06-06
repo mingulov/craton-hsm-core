@@ -1253,7 +1253,8 @@ pub extern "C" fn C_GetAttributeValue(
         let obj = obj.read();
 
         // PKCS#11 §4.4: Private objects must not be accessible without login.
-        if obj.private && !sess.read().state.is_logged_in() {
+        let is_logged_in = sess.read().state.is_logged_in();
+        if obj.private && !is_logged_in {
             return CKR_USER_NOT_LOGGED_IN;
         }
 
@@ -1264,7 +1265,7 @@ pub extern "C" fn C_GetAttributeValue(
         let mut rv = CKR_OK;
 
         for attr in attrs.iter_mut() {
-            match crate::store::attributes::read_attribute(&obj, attr.attr_type) {
+            match crate::store::attributes::read_attribute(&obj, attr.attr_type, is_logged_in) {
                 Ok(Some(value)) => {
                     if attr.p_value.is_null() {
                         attr.value_len = value.len() as CK_ULONG;
@@ -3548,7 +3549,7 @@ pub extern "C" fn C_GetOperationState(
             }
         }
 
-        let state_blob = match op.serialize_state(&hsm.state_hmac_key) {
+        let state_blob = match op.serialize_state(&hsm.state_hmac_key, hSession, sess.slot_id) {
             Ok(v) => v,
             Err(_) => return CKR_STATE_UNSAVEABLE,
         };
@@ -3606,10 +3607,16 @@ pub extern "C" fn C_SetOperationState(
             return CKR_SAVED_STATE_INVALID;
         }
 
+        let sess = match hsm.session_manager.get_session(hSession) {
+            Ok(s) => s,
+            Err(e) => return err_to_rv(e),
+        };
+        let slot_id = sess.read().slot_id;
+
         let blob = unsafe { slice::from_raw_parts(pOperationState, ulOperationStateLen as usize) };
 
         let (op_type, mechanism, key_handle, _mechanism_param, data) =
-            match ActiveOperation::deserialize_state(blob, &hsm.state_hmac_key) {
+            match ActiveOperation::deserialize_state(blob, &hsm.state_hmac_key, hSession, slot_id) {
                 Ok(v) => v,
                 Err(_) => return CKR_SAVED_STATE_INVALID,
             };
@@ -3697,10 +3704,6 @@ pub extern "C" fn C_SetOperationState(
             _ => return CKR_SAVED_STATE_INVALID,
         };
 
-        let sess = match hsm.session_manager.get_session(hSession) {
-            Ok(s) => s,
-            Err(e) => return err_to_rv(e),
-        };
         let mut sess = sess.write();
         sess.active_operation = Some(active_op);
         CKR_OK
@@ -5078,6 +5081,16 @@ pub extern "C" fn C_VerifyFinal(
             Err(e) => return err_to_rv(e),
         };
         let mut sess = sess.write();
+
+        match &sess.active_operation {
+            Some(ActiveOperation::Verify { .. }) => {}
+            _ => return CKR_OPERATION_NOT_INITIALIZED,
+        }
+
+        if (signature_len as usize) > MAX_SINGLE_BUFFER {
+            sess.active_operation = None;
+            return CKR_DATA_LEN_RANGE;
+        }
 
         let (mechanism, key_handle, hasher, data, cached_object) = match &mut sess.active_operation
         {

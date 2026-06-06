@@ -132,8 +132,14 @@ pub fn create_backup(config_path: &str, output: &str) -> Result<(), Box<dyn std:
     // Export all objects from the object store
     let objects = hsm.object_store().export_all_objects();
     let token_serial = config.token.serial_number.clone();
-    let backup_data = backup::create_backup(&objects, &passphrase, &token_serial, None)
-        .map_err(|e| format!("Backup creation failed: {:?}", e))?;
+    let pbkdf2_iterations = config.security.pbkdf2_iterations;
+    let backup_data = backup::create_backup(
+        &objects,
+        &passphrase,
+        &token_serial,
+        Some(pbkdf2_iterations),
+    )
+    .map_err(|e| format!("Backup creation failed: {:?}", e))?;
 
     // Write backup file with restrictive permissions from the start (no race window).
     #[cfg(unix)]
@@ -201,9 +207,15 @@ pub fn restore_backup(config_path: &str, input: &str) -> Result<(), Box<dyn std:
     let hsm = HsmCore::new(&config);
 
     // In the binary, authentication is the real interactive SO PIN prompt.
-    restore_backup_core(&hsm, &config, config_path, &backup_data, &passphrase, |hsm| {
-        authenticate_so(hsm, ADMIN_SLOT_ID)
-    })
+    restore_backup_core(
+        &hsm,
+        &config,
+        config_path,
+        &backup_data,
+        &passphrase,
+        None,
+        |hsm| authenticate_so(hsm, ADMIN_SLOT_ID),
+    )
 }
 
 /// Core orchestration for `backup restore`, parameterised over the SO
@@ -222,6 +234,7 @@ pub(crate) fn restore_backup_core<F>(
     config_path: &str,
     backup_data: &[u8],
     passphrase: &str,
+    replay_guard: Option<backup::PersistentReplayGuard>,
     authenticate: F,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -233,12 +246,20 @@ where
     authenticate(hsm)?;
 
     let token_serial = config.token.serial_number.clone();
+    let mut replay_guard = replay_guard.unwrap_or_else(|| {
+        let replay_guard_path = std::path::Path::new(config_path)
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join(".craton_hsm_replay_guard");
+        backup::PersistentReplayGuard::new(replay_guard_path)
+    });
     let result = restore_backup_authenticated(
         hsm,
-        config_path,
         backup_data,
         passphrase,
         &token_serial,
+        config.security.pbkdf2_iterations,
+        &mut replay_guard,
     );
     logout(hsm, ADMIN_SLOT_ID);
     result
@@ -249,20 +270,12 @@ where
 /// unconditionally on every exit path.
 fn restore_backup_authenticated(
     hsm: &HsmCore,
-    config_path: &str,
     backup_data: &[u8],
     passphrase: &str,
     token_serial: &str,
+    pbkdf2_iterations: u32,
+    replay_guard: &mut backup::PersistentReplayGuard,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Use persistent replay protection to prevent re-importing the same
-    // backup across daemon restarts. The replay guard file is stored
-    // alongside the config file directory.
-    let replay_guard_path = std::path::Path::new(config_path)
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .join(".craton_hsm_replay_guard");
-    let mut replay_guard = backup::PersistentReplayGuard::new(replay_guard_path);
-
     // Extract the guard's consumed IDs into a mutable HashSet for
     // restore_backup. After restore, any newly inserted ID is persisted
     // back to the guard file.
@@ -273,7 +286,7 @@ fn restore_backup_authenticated(
         passphrase,
         token_serial,
         None, // use default 30-day max age
-        None, // default PBKDF2 iterations
+        Some(pbkdf2_iterations),
         Some(&mut consumed_ids),
     )
     .map_err(|e| {
@@ -446,7 +459,7 @@ mod tests {
             objects,
             TEST_PASSPHRASE,
             &config.token.serial_number,
-            Some(1),
+            Some(config.security.pbkdf2_iterations),
         )
         .expect("create_backup")
     }
@@ -490,6 +503,7 @@ mod tests {
             config_path.to_str().unwrap(),
             &blob,
             TEST_PASSPHRASE,
+            None,
             |_| Err("SO authentication failed.".into()),
         );
 
@@ -546,6 +560,7 @@ mod tests {
             config_path.to_str().unwrap(),
             &blob,
             TEST_PASSPHRASE,
+            Some(backup::PersistentReplayGuard::in_memory()),
             |_| Ok(()), // SO auth succeeded
         );
         assert!(result.is_ok(), "restore should succeed: {:?}", result.err());
@@ -621,8 +636,14 @@ mod tests {
         ];
 
         let outcome = stage_and_commit_objects(&hsm, batch).expect("commit");
-        assert_eq!(outcome.restored, 1, "only the non-conflicting object should be inserted");
-        assert_eq!(outcome.skipped, 1, "the conflicting object should be skipped");
+        assert_eq!(
+            outcome.restored, 1,
+            "only the non-conflicting object should be inserted"
+        );
+        assert_eq!(
+            outcome.skipped, 1,
+            "the conflicting object should be skipped"
+        );
 
         // Both handles now exist (4001 was pre-existing, 4002 newly
         // restored).

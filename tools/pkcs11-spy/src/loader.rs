@@ -71,9 +71,7 @@ fn load_library() -> Option<&'static Library> {
                 }
             };
             if !metadata.is_file() {
-                crate::logger::log_loader_error(
-                    "PKCS11_SPY_TARGET must point to a regular file",
-                );
+                crate::logger::log_loader_error("PKCS11_SPY_TARGET must point to a regular file");
                 return None;
             }
 
@@ -131,9 +129,7 @@ fn load_library() -> Option<&'static Library> {
                     }
                 };
                 if !fd_metadata.is_file() {
-                    crate::logger::log_loader_error(
-                        "PKCS11_SPY_TARGET fd is not a regular file",
-                    );
+                    crate::logger::log_loader_error("PKCS11_SPY_TARGET fd is not a regular file");
                     return None;
                 }
 

@@ -51,6 +51,8 @@ RUN cargo install --locked \
 ENV CARGO_TERM_COLOR=always
 ENV RUST_BACKTRACE=1
 ENV PROTOC=/usr/bin/protoc
+# Unsigned debug/test builds embed the placeholder integrity key; POST needs this bypass.
+ENV CRATON_HSM_INTEGRITY_BYPASS=unsafe-dev-only
 
 WORKDIR /app
 

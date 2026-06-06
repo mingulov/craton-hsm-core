@@ -13,6 +13,8 @@ use std::collections::HashSet;
 use std::ptr;
 use std::sync::{Arc, Barrier};
 
+mod common;
+
 fn ck_ulong_bytes(val: CK_ULONG) -> Vec<u8> {
     val.to_ne_bytes().to_vec()
 }

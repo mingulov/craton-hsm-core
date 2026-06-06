@@ -583,9 +583,7 @@ pub fn aes_cbc_decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> HsmResult<Ve
                     .map_err(|_| HsmError::EncryptedDataInvalid)
                     .and_then(|decryptor| {
                         decryptor
-                            .decrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(
-                                ciphertext,
-                            )
+                            .decrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(ciphertext)
                             .map_err(|_| HsmError::EncryptedDataInvalid)
                     })
             }
@@ -595,9 +593,7 @@ pub fn aes_cbc_decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> HsmResult<Ve
                     .map_err(|_| HsmError::EncryptedDataInvalid)
                     .and_then(|decryptor| {
                         decryptor
-                            .decrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(
-                                ciphertext,
-                            )
+                            .decrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(ciphertext)
                             .map_err(|_| HsmError::EncryptedDataInvalid)
                     })
             }
@@ -607,9 +603,7 @@ pub fn aes_cbc_decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> HsmResult<Ve
                     .map_err(|_| HsmError::EncryptedDataInvalid)
                     .and_then(|decryptor| {
                         decryptor
-                            .decrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(
-                                ciphertext,
-                            )
+                            .decrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(ciphertext)
                             .map_err(|_| HsmError::EncryptedDataInvalid)
                     })
             }
@@ -808,8 +802,8 @@ mod tests {
     fn aes_cbc_decrypt_bad_padding_pays_timing_floor() {
         let key = [0u8; 32];
         let iv = [1u8; 16]; // length-valid
-        // 16 bytes of zeros decrypted under an all-zero key with this IV will
-        // almost certainly produce invalid PKCS#7 padding.
+                            // 16 bytes of zeros decrypted under an all-zero key with this IV will
+                            // almost certainly produce invalid PKCS#7 padding.
         let ciphertext = [0u8; 16];
 
         let start = std::time::Instant::now();

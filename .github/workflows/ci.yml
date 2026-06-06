@@ -9,6 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Unsigned debug/test builds embed the placeholder integrity key; POST needs this bypass.
+  CRATON_HSM_INTEGRITY_BYPASS: unsafe-dev-only
 
 jobs:
   # ── Fast gate: catch formatting errors in ~15s before expensive jobs start ──

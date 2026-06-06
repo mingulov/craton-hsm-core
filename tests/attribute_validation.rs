@@ -303,10 +303,19 @@ fn test_read_boolean_attributes() {
     obj.can_sign = true;
     obj.modifiable = false;
 
-    assert_eq!(read_attribute(&obj, CKA_ENCRYPT, true).unwrap(), Some(vec![1]));
-    assert_eq!(read_attribute(&obj, CKA_DECRYPT, true).unwrap(), Some(vec![0]));
+    assert_eq!(
+        read_attribute(&obj, CKA_ENCRYPT, true).unwrap(),
+        Some(vec![1])
+    );
+    assert_eq!(
+        read_attribute(&obj, CKA_DECRYPT, true).unwrap(),
+        Some(vec![0])
+    );
     assert_eq!(read_attribute(&obj, CKA_SIGN, true).unwrap(), Some(vec![1]));
-    assert_eq!(read_attribute(&obj, CKA_MODIFIABLE, true).unwrap(), Some(vec![0]));
+    assert_eq!(
+        read_attribute(&obj, CKA_MODIFIABLE, true).unwrap(),
+        Some(vec![0])
+    );
 }
 
 #[test]

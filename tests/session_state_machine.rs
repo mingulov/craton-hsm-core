@@ -863,12 +863,16 @@ fn test_logout_cancels_session_login_state_on_slot() {
 
     // Handles remain valid (PKCS#11 spec) — but per-session login state is
     // now public, so any operation that requires login will be rejected.
-    let s_ro = mgr.get_session(h_ro).expect("RO handle still valid after logout");
+    let s_ro = mgr
+        .get_session(h_ro)
+        .expect("RO handle still valid after logout");
     assert!(
         !s_ro.read().state.is_logged_in(),
         "RO session must be in public state after logout-cancel"
     );
-    let s_rw = mgr.get_session(h_rw).expect("RW handle still valid after logout");
+    let s_rw = mgr
+        .get_session(h_rw)
+        .expect("RW handle still valid after logout");
     assert!(
         !s_rw.read().state.is_logged_in(),
         "RW session must be in public state after logout-cancel"

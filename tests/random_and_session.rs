@@ -7,6 +7,8 @@ use craton_hsm::pkcs11_abi::functions::*;
 use craton_hsm::pkcs11_abi::types::*;
 use std::ptr;
 
+mod common;
+
 fn ensure_init() {
     let rv = C_Initialize(ptr::null_mut());
     assert!(

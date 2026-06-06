@@ -259,7 +259,11 @@ fn parse_rsa_private_key(der: &[u8]) -> HsmResult<RsaPrivateKey> {
 
     {
         let mut map = RSA_KEY_CACHE.lock();
-        lru_insert(&mut map, cache_key, ZeroizingRsaKey::new(private_key.clone()));
+        lru_insert(
+            &mut map,
+            cache_key,
+            ZeroizingRsaKey::new(private_key.clone()),
+        );
     }
     Ok(private_key)
 }
@@ -1745,7 +1749,10 @@ mod tests {
             lru_insert(&mut map, i, i * 10);
         }
         assert_eq!(map.len(), RSA_KEY_CACHE_MAX);
-        assert!(map.contains_key(&0), "first key must still be present at cap");
+        assert!(
+            map.contains_key(&0),
+            "first key must still be present at cap"
+        );
 
         // One more insert should evict key 0 (the oldest), not anything else.
         let overflow_key = RSA_KEY_CACHE_MAX as u64;
@@ -1799,8 +1806,8 @@ mod tests {
         let (der, _, _) = fresh_rsa_keypair();
         // Populate via the public API path.
         let _ = rsa_pkcs1v15_sign_cached(slot, handle, &der, b"x", Some(HashAlg::Sha256)).unwrap();
-        let arc = get_cached_rsa_private_key(slot, handle)
-            .expect("populated above; must be present");
+        let arc =
+            get_cached_rsa_private_key(slot, handle).expect("populated above; must be present");
         let weak = Arc::downgrade(&arc);
         drop(arc); // release our local strong ref
 

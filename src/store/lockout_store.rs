@@ -205,8 +205,8 @@ mod tests {
             .save(&LockoutData::default())
             .expect("save must succeed");
 
-        let meta = std::fs::metadata(dir.path().join("lockout_state.json"))
-            .expect("stat lockout file");
+        let meta =
+            std::fs::metadata(dir.path().join("lockout_state.json")).expect("stat lockout file");
         let mode = meta.permissions().mode();
         assert_eq!(
             mode & 0o077,

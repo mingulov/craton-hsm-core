@@ -150,8 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // up an accept slot indefinitely. Completed TLS streams are funneled
         // back to the accept stream via an mpsc channel.
         let listener = TcpListener::bind(addr).await?;
-        let handshake_timeout =
-            Duration::from_secs(full_config.daemon.tls_handshake_timeout_secs);
+        let handshake_timeout = Duration::from_secs(full_config.daemon.tls_handshake_timeout_secs);
 
         type AcceptItem =
             Result<tokio_rustls::server::TlsStream<tokio::net::TcpStream>, std::io::Error>;

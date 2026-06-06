@@ -501,13 +501,8 @@ fn test_audit_log_record_sync_in_memory_only() {
     // state has been updated — i.e. entry_count() must reflect the new event
     // immediately, without a subsequent flush().
     let log = AuditLog::new();
-    log.record_sync(
-        7,
-        AuditOperation::DestroyObject,
-        AuditResult::Success,
-        None,
-    )
-    .expect("record_sync should succeed on an in-memory audit log");
+    log.record_sync(7, AuditOperation::DestroyObject, AuditResult::Success, None)
+        .expect("record_sync should succeed on an in-memory audit log");
     assert_eq!(
         log.entry_count(),
         1,

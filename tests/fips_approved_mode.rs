@@ -13,6 +13,8 @@ use craton_hsm::pkcs11_abi::functions::*;
 use craton_hsm::pkcs11_abi::types::*;
 use std::ptr;
 
+mod common;
+
 fn ck_ulong_bytes(val: CK_ULONG) -> Vec<u8> {
     val.to_ne_bytes().to_vec()
 }

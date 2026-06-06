@@ -96,6 +96,9 @@ fi
 
 # ── In-container runner (mirrors .github/workflows/ci.yml + security-audit) ─
 
+# Unsigned debug/test builds embed the placeholder integrity key; POST needs this bypass.
+export CRATON_HSM_INTEGRITY_BYPASS=unsafe-dev-only
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'

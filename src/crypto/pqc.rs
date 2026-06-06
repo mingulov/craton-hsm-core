@@ -222,38 +222,33 @@ pub enum MlDsaVariant {
 
 /// Generate an ML-DSA keypair. Returns (signing_key_seed_32bytes, verifying_key_bytes).
 pub fn ml_dsa_keygen(variant: MlDsaVariant) -> HsmResult<(RawKeyMaterial, Vec<u8>)> {
-    use ml_dsa::KeyGen;
-    // NOTE: `kp.verifying_key()` is a method from `ml_dsa::signature::Keypair`,
-    // which must be in scope for method-call syntax to resolve. Use the fully
-    // qualified path so we don't depend on a `use` statement that linters
-    // sometimes incorrectly flag as unused and strip.
-    use ml_dsa::signature::Keypair as _MlDsaKeypair;
+    use ml_dsa::{Generate, KeyExport, Keypair, SigningKey};
 
     let mut rng = new_rng()?;
 
     match variant {
         MlDsaVariant::MlDsa44 => {
-            let kp = ml_dsa::MlDsa44::key_gen(&mut rng);
-            let seed = kp.to_seed();
-            let vk_bytes = _MlDsaKeypair::verifying_key(&kp).encode();
+            let sk = SigningKey::<ml_dsa::MlDsa44>::generate_from_rng(&mut rng);
+            let seed = sk.to_bytes();
+            let vk_bytes = sk.verifying_key().encode();
             Ok((
                 RawKeyMaterial::new(seed[..].to_vec()),
                 vk_bytes[..].to_vec(),
             ))
         }
         MlDsaVariant::MlDsa65 => {
-            let kp = ml_dsa::MlDsa65::key_gen(&mut rng);
-            let seed = kp.to_seed();
-            let vk_bytes = _MlDsaKeypair::verifying_key(&kp).encode();
+            let sk = SigningKey::<ml_dsa::MlDsa65>::generate_from_rng(&mut rng);
+            let seed = sk.to_bytes();
+            let vk_bytes = sk.verifying_key().encode();
             Ok((
                 RawKeyMaterial::new(seed[..].to_vec()),
                 vk_bytes[..].to_vec(),
             ))
         }
         MlDsaVariant::MlDsa87 => {
-            let kp = ml_dsa::MlDsa87::key_gen(&mut rng);
-            let seed = kp.to_seed();
-            let vk_bytes = _MlDsaKeypair::verifying_key(&kp).encode();
+            let sk = SigningKey::<ml_dsa::MlDsa87>::generate_from_rng(&mut rng);
+            let seed = sk.to_bytes();
+            let vk_bytes = sk.verifying_key().encode();
             Ok((
                 RawKeyMaterial::new(seed[..].to_vec()),
                 vk_bytes[..].to_vec(),
@@ -268,8 +263,7 @@ pub fn ml_dsa_sign(
     data: &[u8],
     variant: MlDsaVariant,
 ) -> HsmResult<Vec<u8>> {
-    use ml_dsa::signature::Signer;
-    use ml_dsa::KeyGen;
+    use ml_dsa::{Signer, SigningKey};
 
     use zeroize::Zeroizing;
     let seed: &[u8; 32] = signing_key_seed
@@ -280,18 +274,18 @@ pub fn ml_dsa_sign(
 
     match variant {
         MlDsaVariant::MlDsa44 => {
-            let kp = ml_dsa::MlDsa44::from_seed(&seed_arr);
-            let sig = kp.signing_key().sign(data);
+            let sk = SigningKey::<ml_dsa::MlDsa44>::from_seed(&seed_arr);
+            let sig = sk.sign(data);
             Ok(sig.encode()[..].to_vec())
         }
         MlDsaVariant::MlDsa65 => {
-            let kp = ml_dsa::MlDsa65::from_seed(&seed_arr);
-            let sig = kp.signing_key().sign(data);
+            let sk = SigningKey::<ml_dsa::MlDsa65>::from_seed(&seed_arr);
+            let sig = sk.sign(data);
             Ok(sig.encode()[..].to_vec())
         }
         MlDsaVariant::MlDsa87 => {
-            let kp = ml_dsa::MlDsa87::from_seed(&seed_arr);
-            let sig = kp.signing_key().sign(data);
+            let sk = SigningKey::<ml_dsa::MlDsa87>::from_seed(&seed_arr);
+            let sig = sk.sign(data);
             Ok(sig.encode()[..].to_vec())
         }
     }

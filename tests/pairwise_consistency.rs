@@ -9,6 +9,8 @@ use craton_hsm::pkcs11_abi::constants::*;
 use craton_hsm::pkcs11_abi::functions;
 use craton_hsm::pkcs11_abi::types::*;
 
+mod common;
+
 fn init_and_login() -> CK_SESSION_HANDLE {
     let rv = functions::C_Initialize(std::ptr::null_mut());
     assert!(rv == CKR_OK || rv == CKR_CRYPTOKI_ALREADY_INITIALIZED);

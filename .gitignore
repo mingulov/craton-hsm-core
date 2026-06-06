@@ -5,12 +5,11 @@
 *.redb
 *.redb.lock
 craton_hsm_store
+craton-hsm-core.bfg-report
+postman
 craton_hsm_audit.jsonl
-rusthsm_store
-rusthsm_audit.jsonl
 
 # IDE / editor config
-.claude/
 .cursor/
 .idea/
 .vscode/

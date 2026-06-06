@@ -878,12 +878,10 @@ impl AuditLog {
     pub fn flush(&self) -> crate::error::HsmResult<()> {
         if let Some(sender) = &self.sender {
             let (tx, rx) = std::sync::mpsc::channel();
-            sender
-                .send(AuditCommand::Flush { done: tx })
-                .map_err(|_| {
-                    tracing::error!("Audit flush: worker channel closed");
-                    crate::error::HsmError::GeneralError
-                })?;
+            sender.send(AuditCommand::Flush { done: tx }).map_err(|_| {
+                tracing::error!("Audit flush: worker channel closed");
+                crate::error::HsmError::GeneralError
+            })?;
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .map_err(|e| {
                     tracing::error!(
