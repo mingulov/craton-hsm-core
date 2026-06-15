@@ -11,6 +11,7 @@ use crate::error::{HsmError, HsmResult};
 use crate::pkcs11_abi::types::CK_ULONG;
 use crate::store::encrypted_store::{hash_pin_pbkdf2, verify_pin_pbkdf2};
 use crate::store::lockout_store::LockoutStore;
+use crate::store::token_state_store::TokenStateStore;
 
 const DEFAULT_MAX_SESSIONS: u64 = 100;
 const DEFAULT_MAX_RW_SESSIONS: u64 = 10;
@@ -116,6 +117,10 @@ pub struct Token {
     /// Optional persistent store for lockout counters. When present, lockout
     /// state survives process restarts, preventing brute-force reset via crash.
     lockout_store: Option<LockoutStore>,
+    /// Optional persistent store for token initialization state (SO/user PIN
+    /// hashes, `initialized` flags, label). When present, a provisioned token
+    /// survives process restarts so multi-process callers see a ready token.
+    token_state_store: Option<TokenStateStore>,
 }
 
 impl Default for Token {
@@ -170,10 +175,29 @@ impl Token {
             auth_state.so_pin_locked = data.so_pin_locked;
         }
 
+        // Create the token-state store and restore a previously provisioned token
+        // (SO/user PIN hashes + initialized flags + label) so it survives process
+        // restarts - without this, token auth is in-memory only and a token
+        // initialized in one process is invisible to the next.
+        let token_state_store = config.map(|c| TokenStateStore::new(&c.token.storage_path));
+        let mut so_pin_hash_init: Option<Zeroizing<Vec<u8>>> = None;
+        let mut user_pin_hash_init: Option<Zeroizing<Vec<u8>>> = None;
+        if let Some(ref store) = token_state_store {
+            if let Some(state) = store.load() {
+                so_pin_hash_init = state.so_pin_hash.map(Zeroizing::new);
+                user_pin_hash_init = state.user_pin_hash.map(Zeroizing::new);
+                auth_state.initialized = state.initialized;
+                auth_state.user_pin_initialized = state.user_pin_initialized;
+                if state.label.len() == 32 {
+                    label.copy_from_slice(&state.label);
+                }
+            }
+        }
+
         Self {
             label: RwLock::new(label),
-            so_pin_hash: RwLock::new(None),
-            user_pin_hash: RwLock::new(None),
+            so_pin_hash: RwLock::new(so_pin_hash_init),
+            user_pin_hash: RwLock::new(user_pin_hash_init),
             auth: Mutex::new(auth_state),
             session_count: AtomicU64::new(0),
             rw_session_count: AtomicU64::new(0),
@@ -184,6 +208,7 @@ impl Token {
             max_failed_logins,
             pbkdf2_iterations,
             lockout_store,
+            token_state_store,
         }
     }
 
@@ -208,6 +233,31 @@ impl Token {
                 // do not survive a restart.
                 tracing::error!(
                     "lockout state save failed: {:?} — lockout counters will not survive restart",
+                    e,
+                );
+            }
+        }
+    }
+
+    /// Persist the current token initialization state (SO/user PIN hashes,
+    /// `initialized` flags, label) so a provisioned token survives a restart.
+    /// Must be called while `auth` is held; the PIN-hash/label `RwLock`s are
+    /// acquired here, preserving the auth-before-RwLock lock ordering.
+    fn persist_token_state(&self, auth: &AuthState) {
+        if let Some(ref store) = self.token_state_store {
+            use crate::store::token_state_store::TokenStateData;
+            let data = TokenStateData {
+                so_pin_hash: self.so_pin_hash.read().as_ref().map(|h| h.to_vec()),
+                user_pin_hash: self.user_pin_hash.read().as_ref().map(|h| h.to_vec()),
+                initialized: auth.initialized,
+                user_pin_initialized: auth.user_pin_initialized,
+                label: self.label.read().to_vec(),
+            };
+            if let Err(e) = store.save(&data) {
+                // Infallible like persist_lockout: log loudly. A token whose
+                // state cannot be persisted will not survive a restart.
+                tracing::error!(
+                    "token state save failed: {:?} - the provisioned token will not survive restart",
                     e,
                 );
             }
@@ -460,6 +510,8 @@ impl Token {
         if let Some(ref store) = self.lockout_store {
             store.clear();
         }
+        // Persist the freshly initialized token state (new SO PIN, no user PIN).
+        self.persist_token_state(&auth);
 
         self.session_count.store(0, Ordering::SeqCst);
         self.rw_session_count.store(0, Ordering::SeqCst);
@@ -485,6 +537,7 @@ impl Token {
         auth.user_pin_locked = false;
         auth.user_next_allowed = None;
         self.persist_lockout(&auth);
+        self.persist_token_state(&auth);
 
         tracing::info!("user PIN initialized by SO");
         Ok(())
@@ -538,6 +591,7 @@ impl Token {
                 auth.user_next_allowed = None;
                 self.persist_lockout(&auth);
                 *self.user_pin_hash.write() = Some(self.hash_pin(new_pin));
+                self.persist_token_state(&auth);
                 tracing::info!("user PIN changed");
             }
             LoginState::SoLoggedIn => {
@@ -574,6 +628,7 @@ impl Token {
                 auth.so_next_allowed = None;
                 self.persist_lockout(&auth);
                 *self.so_pin_hash.write() = Some(self.hash_pin(new_pin));
+                self.persist_token_state(&auth);
                 tracing::info!("SO PIN changed");
             }
             LoginState::Public => {

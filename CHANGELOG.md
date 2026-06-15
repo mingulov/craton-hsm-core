@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Persistent token initialization state** - Added a `TokenStateStore` to persist the token's SO/user PIN hashes, initialized flags, and label to `token_state.json` inside the configured `storage_path`. This allows a provisioned in-process token to survive process restarts, making it visible to multi-process callers of the in-process library. Inline unit tests were added to verify the store.
+
 ## [0.9.1] - 2026-03-20 (Security Audit Hardening)
 
 ### Security Fixes
