@@ -535,6 +535,10 @@ pub extern "C" fn C_InitToken(
 
         // Per PKCS#11 spec: C_InitToken destroys all objects on the token
         hsm.object_store.clear();
+        // Drop the in-memory object-encryption key: the token's object-key
+        // salt has been rotated by `init_token`, so the old key is now stale.
+        // A fresh key is derived on the next user login after `C_InitPIN`.
+        hsm.object_store.clear_persist_key();
         // All keys are destroyed — safe to reset all GCM/IV counters
         crate::crypto::encrypt::force_reset_all_counters();
 
@@ -949,6 +953,35 @@ pub extern "C" fn C_Login(
             Ok(()) => {
                 // Update all sessions for this slot
                 let _ = hsm.session_manager.login_all(slot_id, user_type);
+
+                // If object persistence is enabled, unwrap the object master
+                // key with the user PIN and load any previously persisted token
+                // objects. The master key is stable across PIN changes (only
+                // its wrapping changes), so prior ciphertext always decrypts.
+                // SO logins do not touch object persistence.
+                if hsm.persist_objects && user_type == CKU_USER {
+                    match token.unwrap_object_key(pin) {
+                        Some(omk) => {
+                            hsm.object_store.set_persist_key(*omk);
+                            match hsm.object_store.load_from_store() {
+                                Ok(n) if n > 0 => {
+                                    tracing::info!("loaded {} persisted token object(s)", n);
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    tracing::error!("failed to load persisted objects: {:?}", e);
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::warn!(
+                                "object persistence enabled but no object master key available; \
+                                 persisted objects unavailable until the user PIN is (re)initialized"
+                            );
+                        }
+                    }
+                }
+
                 let _ = hsm.audit_log.record(
                     u64::from(session),
                     AuditOperation::Login {
@@ -1009,6 +1042,10 @@ pub extern "C" fn C_Logout(session: CK_SESSION_HANDLE) -> CK_RV {
                 // operations or close it explicitly — but every CSP that
                 // could outlive the logout has been zeroized.
                 hsm.session_manager.cancel_sessions_for_slot(slot_id);
+                // Drop the in-memory object-encryption key on logout so it does
+                // not outlive the authenticated session (FIPS 140-3 §7.7). The
+                // key is re-derived from the user PIN on the next login.
+                hsm.object_store.clear_persist_key();
                 let _ = hsm.audit_log.record(
                     session as u64,
                     AuditOperation::Logout,
@@ -1524,9 +1561,11 @@ pub extern "C" fn C_EncryptInit(
                 return CKR_KEY_FUNCTION_NOT_PERMITTED;
             }
             // FIPS approved-services key-size enforcement
-            if let Err(e) =
-                approved_services::enforce(mechanism, &hsm.algorithm_config, stored_key_bits(&obj_read))
-            {
+            if let Err(e) = approved_services::enforce(
+                mechanism,
+                &hsm.algorithm_config,
+                stored_key_bits(&obj_read),
+            ) {
                 return err_to_rv(e);
             }
         }
@@ -1834,9 +1873,11 @@ pub extern "C" fn C_DecryptInit(
                 return CKR_KEY_FUNCTION_NOT_PERMITTED;
             }
             // FIPS approved-services key-size enforcement
-            if let Err(e) =
-                approved_services::enforce(mechanism, &hsm.algorithm_config, stored_key_bits(&obj_read))
-            {
+            if let Err(e) = approved_services::enforce(
+                mechanism,
+                &hsm.algorithm_config,
+                stored_key_bits(&obj_read),
+            ) {
                 return err_to_rv(e);
             }
         }
@@ -2087,9 +2128,11 @@ pub extern "C" fn C_SignInit(
                 return CKR_KEY_FUNCTION_NOT_PERMITTED;
             }
             // FIPS approved-services key-size enforcement
-            if let Err(e) =
-                approved_services::enforce(mechanism, &hsm.algorithm_config, stored_key_bits(&obj_read))
-            {
+            if let Err(e) = approved_services::enforce(
+                mechanism,
+                &hsm.algorithm_config,
+                stored_key_bits(&obj_read),
+            ) {
                 return err_to_rv(e);
             }
         }
@@ -2522,9 +2565,11 @@ pub extern "C" fn C_VerifyInit(
                 return CKR_KEY_FUNCTION_NOT_PERMITTED;
             }
             // FIPS approved-services key-size enforcement
-            if let Err(e) =
-                approved_services::enforce(mechanism, &hsm.algorithm_config, stored_key_bits(&obj_read))
-            {
+            if let Err(e) = approved_services::enforce(
+                mechanism,
+                &hsm.algorithm_config,
+                stored_key_bits(&obj_read),
+            ) {
                 return err_to_rv(e);
             }
         }
@@ -2907,9 +2952,7 @@ pub extern "C" fn C_GenerateKeyPair(
         } else {
             None
         };
-        if let Err(e) =
-            approved_services::enforce(mechanism, &hsm.algorithm_config, keygen_bits)
-        {
+        if let Err(e) = approved_services::enforce(mechanism, &hsm.algorithm_config, keygen_bits) {
             return err_to_rv(e);
         }
 

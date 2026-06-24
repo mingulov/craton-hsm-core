@@ -15,6 +15,7 @@
 ## Architecture & Design
 
 - [Architecture Overview](architecture.md) — module diagram, source layout, data flow
+- [Persistent Storage](persistence.md) — enabling encrypted persistence, backup/restore, file locking, security properties
 - [Security Model](security-model.md) — threat model, key protection, side-channel resistance
 - [Fork Safety](fork-safety.md) — multi-process constraints and deployment patterns
 

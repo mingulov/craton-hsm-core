@@ -38,9 +38,10 @@ impl SlotManager {
         let count = count.min(max_slots);
         let mut tokens = HashMap::new();
         for i in 0..count {
+            let slot_id = i as CK_SLOT_ID;
             tokens.insert(
-                i as CK_SLOT_ID,
-                Arc::new(Token::new_with_config(Some(config))),
+                slot_id,
+                Arc::new(Token::new_with_config_for_slot(Some(config), slot_id)),
             );
         }
         Self { tokens }

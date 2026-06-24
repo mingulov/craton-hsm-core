@@ -4,3 +4,4 @@
 
 pub mod slot;
 pub mod token;
+pub mod token_state_store;

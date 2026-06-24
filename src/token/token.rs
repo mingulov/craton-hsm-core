@@ -8,9 +8,17 @@ use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 use crate::error::{HsmError, HsmResult};
-use crate::pkcs11_abi::types::CK_ULONG;
-use crate::store::encrypted_store::{hash_pin_pbkdf2, verify_pin_pbkdf2};
+use crate::pkcs11_abi::types::{CK_SLOT_ID, CK_ULONG};
+use crate::store::encrypted_store::{
+    derive_key_from_pin, hash_pin_pbkdf2, unwrap_key, verify_pin_pbkdf2, wrap_key,
+};
 use crate::store::lockout_store::LockoutStore;
+use crate::token::token_state_store::{TokenStateData, TokenStateStore};
+
+/// Length of the salt used to derive the object-store KEK.
+const OBJECT_KEY_SALT_LEN: usize = 32;
+/// Length of the object master key (AES-256).
+const OBJECT_MASTER_KEY_LEN: usize = 32;
 
 const DEFAULT_MAX_SESSIONS: u64 = 100;
 const DEFAULT_MAX_RW_SESSIONS: u64 = 10;
@@ -116,6 +124,24 @@ pub struct Token {
     /// Optional persistent store for lockout counters. When present, lockout
     /// state survives process restarts, preventing brute-force reset via crash.
     lockout_store: Option<LockoutStore>,
+    /// Optional persistent store for token initialization state (SO/User PIN
+    /// hashes, label, init flags). When present, an initialized token survives
+    /// a process restart instead of re-appearing blank.
+    /// Lock ordering: persisted while `auth` is held; reads the PIN-hash /
+    /// label / salt RwLocks *after* `auth`, matching the struct-wide ordering.
+    token_state_store: Option<TokenStateStore>,
+    /// Stable salt for deriving the object-store key-encryption key (KEK) from
+    /// the user PIN. Distinct from the user-PIN auth salt so the on-disk auth
+    /// verifier can never equal the KEK. Provisioned on the first `init_pin`
+    /// and persisted via `token_state_store`. Not secret.
+    /// Lock ordering: always acquire `auth` before this RwLock.
+    object_key_salt: RwLock<Option<Vec<u8>>>,
+    /// The object master key (OMK) wrapped with the PIN-derived KEK
+    /// (`nonce || ciphertext`). The OMK is the actual object-encryption key;
+    /// keeping it stable and only re-wrapping on `C_SetPIN` means a PIN change
+    /// never requires re-encrypting stored objects. Not secret on its own
+    /// (AES-GCM-wrapped). Lock ordering: always acquire `auth` before this.
+    object_master_key_wrapped: RwLock<Option<Vec<u8>>>,
 }
 
 impl Default for Token {
@@ -129,7 +155,21 @@ impl Token {
         Self::new_with_config(None)
     }
 
+    /// Construct a token for slot 0 (backward-compatible entry point).
     pub fn new_with_config(config: Option<&crate::config::config::HsmConfig>) -> Self {
+        Self::new_with_config_for_slot(config, 0)
+    }
+
+    /// Construct a token for a specific slot.
+    ///
+    /// When `config` is `Some`, lockout and token-initialization state are
+    /// restored from disk (namespaced per `slot_id`) so an initialized token
+    /// survives a process restart. When `config` is `None` the token is
+    /// purely in-memory (used by tests and the default `Token::new`).
+    pub fn new_with_config_for_slot(
+        config: Option<&crate::config::config::HsmConfig>,
+        slot_id: CK_SLOT_ID,
+    ) -> Self {
         let mut label = [b' '; 32];
         let label_str = config
             .map(|c| c.token.label.as_str())
@@ -170,10 +210,37 @@ impl Token {
             auth_state.so_pin_locked = data.so_pin_locked;
         }
 
+        // Restore token initialization state (PIN hashes, label, init flags)
+        // so an initialized token survives a restart. This is gated on
+        // `persist_objects`: it is the same opt-in that enables object
+        // persistence, so enabling it gives *full* persistence (token state +
+        // objects), while the default keeps the token entirely in memory
+        // (only lockout counters persist, as before).
+        let token_state_store = config
+            .filter(|c| c.token.persist_objects)
+            .map(|c| TokenStateStore::new(&c.token.storage_path, slot_id));
+        let mut so_pin_hash = None;
+        let mut user_pin_hash = None;
+        let mut object_key_salt = None;
+        let mut object_master_key_wrapped = None;
+        if let Some(ref store) = token_state_store {
+            if let Some(restored) = store.load() {
+                auth_state.initialized = restored.initialized;
+                auth_state.user_pin_initialized = restored.user_pin_initialized;
+                if let Some(l) = restored.label {
+                    label = l;
+                }
+                so_pin_hash = restored.so_pin_hash;
+                user_pin_hash = restored.user_pin_hash;
+                object_key_salt = restored.object_key_salt;
+                object_master_key_wrapped = restored.object_master_key_wrapped;
+            }
+        }
+
         Self {
             label: RwLock::new(label),
-            so_pin_hash: RwLock::new(None),
-            user_pin_hash: RwLock::new(None),
+            so_pin_hash: RwLock::new(so_pin_hash),
+            user_pin_hash: RwLock::new(user_pin_hash),
             auth: Mutex::new(auth_state),
             session_count: AtomicU64::new(0),
             rw_session_count: AtomicU64::new(0),
@@ -184,6 +251,88 @@ impl Token {
             max_failed_logins,
             pbkdf2_iterations,
             lockout_store,
+            token_state_store,
+            object_key_salt: RwLock::new(object_key_salt),
+            object_master_key_wrapped: RwLock::new(object_master_key_wrapped),
+        }
+    }
+
+    /// Persist the current token initialization state (PIN hashes, label,
+    /// init flags, object-key salt) to disk, if a store is configured.
+    ///
+    /// Must be called while `auth` is held by the caller. Reads the PIN-hash,
+    /// label, and salt RwLocks *after* `auth`, matching the struct-wide lock
+    /// ordering. Infallible from the caller's perspective — an I/O / permission
+    /// failure is logged loudly (the token simply will not survive a restart),
+    /// matching the `persist_lockout` contract.
+    fn persist_token_state(&self, auth: &AuthState) {
+        let store = match self.token_state_store {
+            Some(ref s) => s,
+            None => return,
+        };
+
+        let label_hex = hex::encode(*self.label.read());
+        let so_pin_hash_hex = self
+            .so_pin_hash
+            .read()
+            .as_ref()
+            .map(|h| hex::encode(h.as_slice()));
+        let user_pin_hash_hex = self
+            .user_pin_hash
+            .read()
+            .as_ref()
+            .map(|h| hex::encode(h.as_slice()));
+        let object_key_salt_hex = self
+            .object_key_salt
+            .read()
+            .as_ref()
+            .map(|s| hex::encode(s.as_slice()));
+        let object_master_key_wrapped_hex = self
+            .object_master_key_wrapped
+            .read()
+            .as_ref()
+            .map(|w| hex::encode(w.as_slice()));
+
+        let data = TokenStateData {
+            initialized: auth.initialized,
+            user_pin_initialized: auth.user_pin_initialized,
+            label_hex,
+            so_pin_hash_hex,
+            user_pin_hash_hex,
+            object_key_salt_hex,
+            object_master_key_wrapped_hex,
+        };
+        if let Err(e) = store.save(&data) {
+            tracing::error!(
+                "token state save failed: {:?} — token init state will not survive restart",
+                e
+            );
+        }
+    }
+
+    /// Unwrap and return the object master key (OMK) using the user PIN.
+    ///
+    /// Called by the ABI layer at user-login time to obtain the
+    /// `EncryptedStore` object-encryption key. Derives the KEK from the user
+    /// PIN and the stable per-token salt, then AES-GCM-unwraps the stored OMK.
+    /// Returns `None` when object persistence has not been provisioned (no
+    /// salt / wrapped key yet) or when unwrapping fails (e.g. wrong PIN — the
+    /// GCM tag will not authenticate).
+    ///
+    /// The returned key is wrapped in `Zeroizing` so it is cleared on drop.
+    pub fn unwrap_object_key(
+        &self,
+        user_pin: &[u8],
+    ) -> Option<Zeroizing<[u8; OBJECT_MASTER_KEY_LEN]>> {
+        let salt = self.object_key_salt.read().clone()?;
+        let wrapped = self.object_master_key_wrapped.read().clone()?;
+        let (kek, _) = derive_key_from_pin(user_pin, Some(&salt), Some(self.pbkdf2_iterations));
+        match unwrap_key(&kek, &wrapped) {
+            Ok(omk) => Some(omk),
+            Err(e) => {
+                tracing::warn!("failed to unwrap object master key: {:?}", e);
+                None
+            }
         }
     }
 
@@ -216,6 +365,66 @@ impl Token {
 
     fn hash_pin(&self, pin: &[u8]) -> Zeroizing<Vec<u8>> {
         hash_pin_pbkdf2(pin, Some(self.pbkdf2_iterations))
+    }
+
+    /// Generate a fresh random salt for object-store KEK derivation.
+    ///
+    /// Routes through the SP 800-90A HMAC_DRBG so the bytes are subject to the
+    /// approved DRBG's health-test gating, consistent with all other
+    /// randomness in the HSM. The salt is not secret, but it must be
+    /// unpredictable so two tokens never share a KEK.
+    fn generate_object_key_salt() -> HsmResult<Vec<u8>> {
+        let mut salt = vec![0u8; OBJECT_KEY_SALT_LEN];
+        let mut drbg = crate::crypto::drbg::HmacDrbg::new()?;
+        drbg.generate(&mut salt)?;
+        Ok(salt)
+    }
+
+    /// Generate a fresh random object master key (OMK) via the HMAC_DRBG.
+    fn generate_object_master_key() -> HsmResult<Zeroizing<[u8; OBJECT_MASTER_KEY_LEN]>> {
+        let mut key = Zeroizing::new([0u8; OBJECT_MASTER_KEY_LEN]);
+        let mut drbg = crate::crypto::drbg::HmacDrbg::new()?;
+        drbg.generate(key.as_mut())?;
+        Ok(key)
+    }
+
+    /// Provision object-persistence material for `user_pin`: generate a fresh
+    /// salt and OMK, wrap the OMK with the PIN-derived KEK, and store both in
+    /// the in-memory fields (the caller persists via `persist_token_state`).
+    ///
+    /// Caller must hold `auth`. Acquires the salt / wrapped-key RwLocks after
+    /// `auth`, matching the struct-wide lock ordering.
+    fn provision_object_key(&self, user_pin: &[u8]) -> HsmResult<()> {
+        let salt = Self::generate_object_key_salt()?;
+        let omk = Self::generate_object_master_key()?;
+        let (kek, _) = derive_key_from_pin(user_pin, Some(&salt), Some(self.pbkdf2_iterations));
+        let wrapped = wrap_key(&kek, &omk)?;
+        *self.object_key_salt.write() = Some(salt);
+        *self.object_master_key_wrapped.write() = Some(wrapped);
+        Ok(())
+    }
+
+    /// Re-wrap the existing OMK with a KEK derived from `new_pin`, keeping the
+    /// OMK (and therefore all stored object ciphertext) unchanged across a PIN
+    /// change. No-op when object persistence has not been provisioned.
+    ///
+    /// `old_pin` must be the currently-valid user PIN — it is used to unwrap
+    /// the OMK before re-wrapping. Caller must hold `auth`.
+    fn rewrap_object_key(&self, old_pin: &[u8], new_pin: &[u8]) -> HsmResult<()> {
+        let salt = match self.object_key_salt.read().clone() {
+            Some(s) => s,
+            None => return Ok(()), // persistence not provisioned — nothing to do
+        };
+        let wrapped = match self.object_master_key_wrapped.read().clone() {
+            Some(w) => w,
+            None => return Ok(()),
+        };
+        let (old_kek, _) = derive_key_from_pin(old_pin, Some(&salt), Some(self.pbkdf2_iterations));
+        let omk = unwrap_key(&old_kek, &wrapped)?;
+        let (new_kek, _) = derive_key_from_pin(new_pin, Some(&salt), Some(self.pbkdf2_iterations));
+        let rewrapped = wrap_key(&new_kek, &omk)?;
+        *self.object_master_key_wrapped.write() = Some(rewrapped);
+        Ok(())
     }
 
     fn verify_pin(&self, stored_hash: &[u8], provided_pin: &[u8]) -> bool {
@@ -451,6 +660,12 @@ impl Token {
         *self.so_pin_hash.write() = Some(hash);
         *self.label.write() = *label;
         *self.user_pin_hash.write() = None;
+        // Drop the object-key salt and wrapped master key: re-init must
+        // produce a fresh object master key so any residual ciphertext on disk
+        // becomes cryptographically inaccessible (FIPS 140-3 §7.7). Both are
+        // re-provisioned on the next `init_pin`.
+        *self.object_key_salt.write() = None;
+        *self.object_master_key_wrapped.write() = None;
 
         // Reset all auth state atomically under one lock
         auth.reset_for_init();
@@ -460,6 +675,9 @@ impl Token {
         if let Some(ref store) = self.lockout_store {
             store.clear();
         }
+        // Persist the new initialization state (SO PIN hash + label) so the
+        // freshly re-initialized token survives a restart.
+        self.persist_token_state(&auth);
 
         self.session_count.store(0, Ordering::SeqCst);
         self.rw_session_count.store(0, Ordering::SeqCst);
@@ -480,11 +698,34 @@ impl Token {
 
         let hash = self.hash_pin(pin);
         *self.user_pin_hash.write() = Some(hash);
+        // Provision object persistence material on first user-PIN init: a
+        // stable KEK-derivation salt and a random object master key (OMK)
+        // wrapped with the PIN-derived KEK. The OMK is the real
+        // object-encryption key, so later PIN changes only re-wrap it (see
+        // `set_pin`) — stored objects never need re-encryption. Only done when
+        // persistence state is tracked (token_state_store present) and not
+        // already provisioned. Failure is non-fatal for PIN init: object
+        // persistence simply stays unavailable until it can be provisioned.
+        if self.token_state_store.is_some() && self.object_key_salt.read().is_none() {
+            match self.provision_object_key(pin) {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::error!(
+                        "failed to provision object master key: {:?} — object persistence \
+                         will be unavailable for this token",
+                        e
+                    );
+                }
+            }
+        }
         auth.user_pin_initialized = true;
         auth.failed_user_logins = 0;
         auth.user_pin_locked = false;
         auth.user_next_allowed = None;
         self.persist_lockout(&auth);
+        // Persist the user PIN hash + object-key salt so login works after a
+        // restart and persisted objects can be decrypted.
+        self.persist_token_state(&auth);
 
         tracing::info!("user PIN initialized by SO");
         Ok(())
@@ -538,6 +779,19 @@ impl Token {
                 auth.user_next_allowed = None;
                 self.persist_lockout(&auth);
                 *self.user_pin_hash.write() = Some(self.hash_pin(new_pin));
+                // Re-wrap the object master key with the new PIN so persisted
+                // objects remain decryptable without re-encrypting them. The
+                // old PIN was just verified above, so the unwrap will succeed.
+                if let Err(e) = self.rewrap_object_key(old_pin, new_pin) {
+                    tracing::error!(
+                        "failed to re-wrap object master key on PIN change: {:?} — \
+                         persisted objects may be unrecoverable with the new PIN",
+                        e
+                    );
+                }
+                // Persist the new user PIN hash + re-wrapped key so the change
+                // survives a restart.
+                self.persist_token_state(&auth);
                 tracing::info!("user PIN changed");
             }
             LoginState::SoLoggedIn => {
@@ -574,6 +828,8 @@ impl Token {
                 auth.so_next_allowed = None;
                 self.persist_lockout(&auth);
                 *self.so_pin_hash.write() = Some(self.hash_pin(new_pin));
+                // Persist the new SO PIN hash so the change survives a restart.
+                self.persist_token_state(&auth);
                 tracing::info!("SO PIN changed");
             }
             LoginState::Public => {

@@ -122,6 +122,7 @@ The FIPS-validated aws-lc-rs backend is available in [craton-hsm-enterprise](htt
 - [API Reference](docs/api-reference.md) — PKCS#11 C ABI functions and Rust library API
 - [Examples](docs/examples.md) — usage with pkcs11-tool, OpenSSL, Python, Java
 - [Configuration Reference](docs/configuration-reference.md) — all `craton_hsm.toml` fields, defaults, and examples
+- [Persistent Storage](docs/persistence.md) — enabling encrypted persistence, backup/restore, file locking, security properties
 - [Architecture Overview](docs/architecture.md) — module diagram, source layout, data flow
 - [Security Model](docs/security-model.md) — threat model, key protection, access control
 - [Troubleshooting](docs/troubleshooting.md) — common errors, build issues, runtime problems

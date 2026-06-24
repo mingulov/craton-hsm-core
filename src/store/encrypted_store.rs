@@ -471,6 +471,60 @@ fn set_restrictive_permissions_windows(path: &std::path::Path) -> HsmResult<()> 
     }
 }
 
+/// Wrap a 32-byte key with a key-encryption key (KEK) using AES-256-GCM.
+///
+/// Returns `nonce (12 bytes) || ciphertext (32 + 16-byte tag)`. Used to
+/// protect the object master key with the PIN-derived key: the master key
+/// (and therefore all object ciphertext) stays stable across PIN changes —
+/// only the small wrapping blob is re-computed on `C_SetPIN`, so no bulk
+/// re-encryption is required and a PIN change is atomic.
+pub fn wrap_key(kek: &[u8; KEY_LEN], key: &[u8; KEY_LEN]) -> HsmResult<Vec<u8>> {
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    let mut drbg = HmacDrbg::new()?;
+    drbg.generate(&mut nonce_bytes)?;
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(kek));
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, key.as_slice())
+        .map_err(|_| HsmError::GeneralError)?;
+
+    let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Unwrap a 32-byte key previously produced by [`wrap_key`].
+///
+/// Returns the unwrapped key in a `Zeroizing` container. An authentication
+/// failure (wrong KEK, i.e. wrong PIN, or tampering) returns
+/// `EncryptedDataInvalid`.
+pub fn unwrap_key(kek: &[u8; KEY_LEN], wrapped: &[u8]) -> HsmResult<Zeroizing<[u8; KEY_LEN]>> {
+    if wrapped.len() < NONCE_LEN {
+        return Err(HsmError::EncryptedDataInvalid);
+    }
+    let nonce = Nonce::from_slice(&wrapped[..NONCE_LEN]);
+    let ciphertext = &wrapped[NONCE_LEN..];
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(kek));
+    let mut plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| HsmError::EncryptedDataInvalid)?;
+
+    if plaintext.len() != KEY_LEN {
+        use zeroize::Zeroize;
+        plaintext.zeroize();
+        return Err(HsmError::EncryptedDataInvalid);
+    }
+    let mut out = Zeroizing::new([0u8; KEY_LEN]);
+    out.copy_from_slice(&plaintext);
+    // Zeroize the intermediate plaintext Vec; `out` retains the only copy.
+    use zeroize::Zeroize;
+    plaintext.zeroize();
+    Ok(out)
+}
+
 /// Derive an encryption key from a PIN using PBKDF2-HMAC-SHA256.
 /// Returns (derived_key, salt). If salt is None, generates a new random salt.
 /// The derived key is wrapped in `Zeroizing` so it is cleared on drop.

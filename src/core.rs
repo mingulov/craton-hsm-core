@@ -15,6 +15,7 @@ use crate::crypto::rate_limit::RateLimiter;
 use crate::crypto::rustcrypto_backend::RustCryptoBackend;
 use crate::session::manager::SessionManager;
 use crate::store::attributes::ObjectStore;
+use crate::store::encrypted_store::EncryptedStore;
 use crate::token::slot::SlotManager;
 use zeroize::Zeroizing;
 
@@ -44,6 +45,10 @@ pub struct HsmCore {
     pub(crate) metrics: MetricsCollector,
     /// Per-session and global rate limiter for crypto operations.
     pub(crate) rate_limiter: RateLimiter,
+    /// Whether token-object persistence is enabled (`[token] persist_objects`).
+    /// Read by the ABI login path to decide whether to derive and install the
+    /// EncryptedStore key from the user PIN.
+    pub(crate) persist_objects: bool,
 }
 
 impl HsmCore {
@@ -54,6 +59,48 @@ impl HsmCore {
         let len = s.len().min(16);
         serial[..len].copy_from_slice(&s[..len]);
         serial
+    }
+
+    /// Build the object store, enabling encrypted persistence when
+    /// `[token] persist_objects = true`.
+    ///
+    /// When enabled, the encrypted redb database lives at
+    /// `<storage_path>/objects.redb` and is guarded by an exclusive
+    /// `<...>.lock` file (multi-process safety). The directory is created if
+    /// absent. The per-object encryption key is *not* set here — it is derived
+    /// from the user PIN and installed at `C_Login` time (see `C_Login` in the
+    /// ABI layer). When disabled, returns a purely in-memory store, preserving
+    /// the legacy default.
+    fn build_object_store(config: &HsmConfig) -> Result<ObjectStore, crate::error::HsmError> {
+        if !config.token.persist_objects {
+            return Ok(ObjectStore::new());
+        }
+
+        let dir = &config.token.storage_path;
+        std::fs::create_dir_all(dir).map_err(|e| {
+            tracing::error!(
+                "failed to create storage directory '{}' for object persistence: {}",
+                dir.display(),
+                e
+            );
+            crate::error::HsmError::GeneralError
+        })?;
+
+        let db_path = dir.join("objects.redb");
+        let db_path_str = db_path.to_str().ok_or_else(|| {
+            tracing::error!(
+                "object store path '{}' is not valid UTF-8",
+                db_path.display()
+            );
+            crate::error::HsmError::GeneralError
+        })?;
+
+        let store = EncryptedStore::new(Some(db_path_str))?;
+        tracing::info!(
+            "object persistence enabled — encrypted store at '{}'",
+            db_path.display()
+        );
+        Ok(ObjectStore::with_persistence(store))
     }
 
     /// Select the crypto backend based on config + compiled features.
@@ -143,7 +190,7 @@ impl HsmCore {
         Ok(Self {
             slot_manager: SlotManager::new_with_config(config),
             session_manager: SessionManager::new(),
-            object_store: ObjectStore::new(),
+            object_store: Self::build_object_store(config)?,
             audit_log: {
                 let log = if config.audit.enabled {
                     AuditLog::new_with_path(config.audit.log_path.clone())?
@@ -162,6 +209,7 @@ impl HsmCore {
             conditional_self_test: ConditionalSelfTest::new(),
             metrics: MetricsCollector::new(true),
             rate_limiter: RateLimiter::new(&crate::crypto::rate_limit::RateLimitConfig::default()),
+            persist_objects: config.token.persist_objects,
         })
     }
 
@@ -188,7 +236,7 @@ impl HsmCore {
         Ok(Self {
             slot_manager: SlotManager::new_with_config(config),
             session_manager: SessionManager::new(),
-            object_store: ObjectStore::new(),
+            object_store: Self::build_object_store(config)?,
             audit_log: {
                 let log = if config.audit.enabled {
                     AuditLog::new_with_path(config.audit.log_path.clone())?
@@ -207,6 +255,7 @@ impl HsmCore {
             conditional_self_test: ConditionalSelfTest::new(),
             metrics: MetricsCollector::new(true),
             rate_limiter: RateLimiter::new(&crate::crypto::rate_limit::RateLimitConfig::default()),
+            persist_objects: config.token.persist_objects,
         })
     }
 
