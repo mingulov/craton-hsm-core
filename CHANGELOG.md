@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.3] - 2026-06-24 (Persistent Storage)
+
+### Added
+- **Persistent token state** — when `persist_objects = true`, the token's
+  initialization state (SO/User PIN PBKDF2 hashes, label, and the
+  `initialized` / `user_pin_initialized` flags) is now written to a per-slot,
+  owner-only `token_state_<slot>.json` and restored on startup. Previously this
+  lived only in memory, so a token re-appeared uninitialized after every
+  restart, making persistence unusable in practice. (`token/token_state_store.rs`, `token/token.rs`)
+- **Encrypted object persistence wired end-to-end** — `HsmCore` now builds an
+  `EncryptedStore`-backed object store when `persist_objects = true`, installs
+  the object-encryption key at `C_Login`, and clears it at `C_Logout` /
+  `C_InitToken`. Token objects (`CKA_TOKEN=true`) now survive restarts. (`core.rs`, `pkcs11_abi/functions.rs`)
+- **Wrapped object master key (KEK)** — objects are encrypted under a random
+  object master key (OMK) that is itself AES-256-GCM-wrapped by a PIN-derived
+  key. A `C_SetPIN` only re-wraps the OMK (atomic, crash-safe) instead of
+  re-encrypting stored objects. `C_InitToken` rotates the OMK, logically
+  zeroizing prior ciphertext. (`store/encrypted_store.rs`, `token/token.rs`)
+- `docs/persistence.md` — full documentation of the persistence model,
+  key hierarchy, on-disk files, and security properties.
+
+### Security
+- Token-state and object persistence are gated behind the single opt-in
+  `persist_objects` flag; the default remains fully in-memory. PIN-hash and
+  token-state files are written atomically with owner-only permissions (mode
+  0600 / owner-only DACL), and a failure to lock them down is fatal.
+
 ## [0.9.1] - 2026-03-20 (Security Audit Hardening)
 
 ### Security Fixes
